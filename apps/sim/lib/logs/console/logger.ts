@@ -1,11 +1,19 @@
 /**
  * logger.ts
  *
- * This module provides standardized console logging utilities for internal application logging.
- * It is separate from the user-facing logging system in logging.ts.
+ * Enhanced logging system with automatic structured logging integration.
+ *
+ * This logger seamlessly combines:
+ * - Legacy console logging for client-side/development
+ * - High-performance Pino structured logging for server-side/production
+ * - Automatic data sanitization for security
+ *
+ * Usage remains the same - the logger automatically chooses the best approach
+ * based on environment (client vs server, dev vs production).
  */
 import chalk from 'chalk'
 import { env } from '@/lib/env'
+import { createStructuredLogger } from '@/lib/logs/structured/logger'
 
 /**
  * LogLevel enum defines the severity levels for logging
@@ -34,24 +42,27 @@ export enum LogLevel {
  *
  * enabled: Whether logging is enabled at all
  * minLevel: The minimum log level that will be displayed
- *          (e.g., INFO will show INFO, WARN, and ERROR, but not DEBUG)
  * colorize: Whether to apply color formatting to logs
+ * useStructured: Whether to use Pino structured logging (server-side only)
  */
 const LOG_CONFIG = {
   development: {
     enabled: true,
     minLevel: LogLevel.DEBUG, // Show all logs in development
     colorize: true,
+    useStructured: false, // Use legacy console logging for client-side in dev
   },
   production: {
-    enabled: false, // Disable all console logs in production
-    minLevel: LogLevel.ERROR,
+    enabled: true, // Now enabled for server-side structured logging
+    minLevel: LogLevel.INFO, // Show INFO and above in production
     colorize: false,
+    useStructured: true, // Use structured logger for server-side
   },
   test: {
     enabled: false, // Disable logs in test environment
     minLevel: LogLevel.ERROR,
     colorize: false,
+    useStructured: false,
   },
 }
 
@@ -80,13 +91,18 @@ const formatObject = (obj: any): string => {
 }
 
 /**
- * Logger class for standardized console logging
+ * Enhanced Logger class with automatic structured logging
  *
- * This class provides methods for logging at different severity levels
- * and handles formatting, colorization, and environment-specific behavior.
+ * Features:
+ * - Automatic environment detection (client vs server)
+ * - Seamless integration of Pino structured logging for production
+ * - Legacy console logging for development and client-side
+ * - Built-in data sanitization for security
+ * - Same API - no code changes required in existing usage
  */
 export class Logger {
   private module: string
+  private structuredLogger: ReturnType<typeof createStructuredLogger> | null = null
 
   /**
    * Create a new logger for a specific module
@@ -94,6 +110,27 @@ export class Logger {
    */
   constructor(module: string) {
     this.module = module
+
+    // Initialize structured logger for server-side usage
+    const isServerSide = typeof window === 'undefined'
+    if (isServerSide && config.useStructured) {
+      this.structuredLogger = createStructuredLogger(module)
+    }
+  }
+
+  /**
+   * Check if logging should be enabled based on environment and client/server context
+   */
+  private shouldLogInEnvironment(): boolean {
+    const isServerSide = typeof window === 'undefined'
+
+    // In production: only log on server-side, never on client-side
+    if (ENV === 'production') {
+      return isServerSide
+    }
+
+    // In development/test: follow config.enabled
+    return config.enabled
   }
 
   /**
@@ -104,7 +141,8 @@ export class Logger {
    * @returns boolean indicating whether the log should be displayed
    */
   private shouldLog(level: LogLevel): boolean {
-    if (!config.enabled) return false
+    // First check environment-specific rules
+    if (!this.shouldLogInEnvironment()) return false
 
     const levels = [LogLevel.DEBUG, LogLevel.INFO, LogLevel.WARN, LogLevel.ERROR]
     const minLevelIndex = levels.indexOf(config.minLevel)
@@ -195,7 +233,13 @@ export class Logger {
    * @param args Additional arguments to log
    */
   debug(message: string, ...args: any[]) {
-    this.log(LogLevel.DEBUG, message, ...args)
+    if (this.structuredLogger) {
+      // Server-side: use structured logger
+      this.structuredLogger.debug(message, {}, ...args)
+    } else {
+      // Client-side: use legacy console (disabled in production)
+      this.log(LogLevel.DEBUG, message, ...args)
+    }
   }
 
   /**
@@ -213,7 +257,13 @@ export class Logger {
    * @param args Additional arguments to log
    */
   info(message: string, ...args: any[]) {
-    this.log(LogLevel.INFO, message, ...args)
+    if (this.structuredLogger) {
+      // Server-side: use structured logger
+      this.structuredLogger.info(message, {}, ...args)
+    } else {
+      // Client-side: use legacy console (disabled in production)
+      this.log(LogLevel.INFO, message, ...args)
+    }
   }
 
   /**
@@ -230,7 +280,13 @@ export class Logger {
    * @param args Additional arguments to log
    */
   warn(message: string, ...args: any[]) {
-    this.log(LogLevel.WARN, message, ...args)
+    if (this.structuredLogger) {
+      // Server-side: use structured logger
+      this.structuredLogger.warn(message, {}, ...args)
+    } else {
+      // Client-side: use legacy console (disabled in production)
+      this.log(LogLevel.WARN, message, ...args)
+    }
   }
 
   /**
@@ -247,16 +303,27 @@ export class Logger {
    * @param args Additional arguments to log
    */
   error(message: string, ...args: any[]) {
-    this.log(LogLevel.ERROR, message, ...args)
+    if (this.structuredLogger) {
+      // Server-side: use structured logger
+      this.structuredLogger.error(message, {}, ...args)
+    } else {
+      // Client-side: use legacy console (disabled in production)
+      this.log(LogLevel.ERROR, message, ...args)
+    }
   }
 }
 
 /**
  * Create a logger for a specific module
  *
+ * This creates an enhanced logger that automatically:
+ * - Uses structured logging (Pino) on server-side in production
+ * - Uses console logging on client-side and in development
+ * - Sanitizes sensitive data automatically
+ *
  * Usage example:
  * ```
- * import { createLogger } from '@/lib/logger'
+ * import { createLogger } from '@/lib/logs/console/logger'
  *
  * const logger = createLogger('MyComponent')
  *
@@ -267,8 +334,34 @@ export class Logger {
  * ```
  *
  * @param module The name of the module (e.g., 'OpenAIProvider', 'AgentBlockHandler')
- * @returns A Logger instance
+ * @returns Enhanced Logger instance with automatic structured logging
  */
 export function createLogger(module: string): Logger {
   return new Logger(module)
 }
+
+/**
+ * Export sanitization utilities for manual usage
+ */
+export {
+  containsSensitiveData,
+  sanitizeLogArgs,
+  sanitizeLogData,
+} from '@/lib/logs/sanitizer'
+/**
+ * Export structured logger components for advanced usage
+ *
+ * Use these when you need direct access to structured logging features:
+ * - Performance timing
+ * - Custom context management
+ * - Specialized log formatting
+ */
+export {
+  createRequestLogger,
+  createStructuredLogger,
+  createUserLogger,
+  createWorkflowLogger,
+  type LogContext,
+  type PerformanceMetrics,
+  StructuredLogger,
+} from '@/lib/logs/structured/logger'
